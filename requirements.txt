@@ -6,3 +6,4 @@ pydantic
 beautifulsoup4
 numpy
 db-sqlite3
+duckdb
