@@ -6,16 +6,19 @@ import os
 import json
 from typing import Dict, Any
 from pydantic import BaseModel  # Import Pydantic
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from datetime import datetime
 import sqlite3
-import numpy as np
 from typing import List
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 import subprocess
 import sys
 import re
+import base64
+import numpy as np
+import duckdb
+from fastapi.responses import PlainTextResponse
 
 
 
@@ -31,26 +34,20 @@ app.add_middleware(
     allow_headers=["*"],  # Restrict in production
 )
 
+
 # Pydantic model for input validation
 class RunTaskRequest(BaseModel):
     task: str
 
-import requests
-import json
-import os
-import subprocess
-from fastapi import FastAPI, HTTPException
 
 app = FastAPI()
-
-
 
 
 def setup_and_run_datagen(user_email: str):
     """
     Ensures 'uv' is installed, downloads datagen.py, sets up environment, and runs the script.
     """
-    datagen_url= "https://raw.githubusercontent.com/sanand0/tools-in-data-science-public/tds-2025-01/project-1/datagen.py"
+    datagen_url = "https://raw.githubusercontent.com/sanand0/tools-in-data-science-public/tds-2025-01/project-1/datagen.py"
     try:
         # Add logging
         print(f"Starting setup for email: {user_email}")
@@ -64,7 +61,7 @@ def setup_and_run_datagen(user_email: str):
         temp_dir = "temp_datagen"
         os.makedirs(temp_dir, exist_ok=True)
         script_path = os.path.join(temp_dir, "datagen.py")
-        
+
         print(f"Created temporary directory: {temp_dir}")
 
         # Download datagen.py with better error handling
@@ -85,9 +82,11 @@ def setup_and_run_datagen(user_email: str):
             print("Setting up virtual environment...")
             venv_cmd = ["python", "-m", "venv", os.path.join(temp_dir, "venv")]
             subprocess.run(venv_cmd, check=True, capture_output=True, text=True)
-            
+
             # Determine the correct python path based on OS
-            venv_python = os.path.join(temp_dir, "venv", "Scripts" if os.name == 'nt' else "bin", "python")
+            venv_python = os.path.join(
+                temp_dir, "venv", "Scripts" if os.name == 'nt' else "bin", "python"
+            )
             print(f"Using python path: {venv_python}")
 
             # Install requirements including Pillow
@@ -102,14 +101,14 @@ def setup_and_run_datagen(user_email: str):
                 check=True,
                 capture_output=True,
                 text=True,
-                timeout=60
+                timeout=60,
             )
 
             print("Script execution completed")
             return {
                 "status": "success",
                 "message": f"Data generation completed successfully for {user_email}",
-                "output": process.stdout
+                "output": process.stdout,
             }
 
         except subprocess.TimeoutExpired as e:
@@ -130,23 +129,23 @@ def setup_and_run_datagen(user_email: str):
         try:
             print(f"Cleaning up temporary directory: {temp_dir}")
             import shutil
+
             shutil.rmtree(temp_dir, ignore_errors=True)
         except Exception as e:
             print(f"Error during cleanup: {str(e)}")
 
 
-
-
 DATE_FORMATS = [
-    "%Y-%m-%d",          # 2022-01-19
-    "%d-%b-%Y",          # 07-Mar-2010
-    "%Y/%m/%d %H:%M:%S", # 2011/08/05 11:28:37
-    "%b %d, %Y",         # Oct 03, 2007
-    "%Y/%m/%d",          # 2009/07/10
+    "%Y-%m-%d",  # 2022-01-19
+    "%d-%b-%Y",  # 07-Mar-2010
+    "%Y/%m/%d %H:%M:%S",  # 2011/08/05 11:28:37
+    "%b %d, %Y",  # Oct 03, 2007
+    "%Y/%m/%d",  # 2009/07/10
 ]
 
+
 def parse_date(date_str):
-    """ Try multiple date formats and return a valid datetime object. """
+    """Try multiple date formats and return a valid datetime object."""
     for fmt in DATE_FORMATS:
         try:
             return datetime.strptime(date_str.strip(), fmt)
@@ -167,7 +166,7 @@ def count_days(input_location: str, output_location: str, day_name: str):
         "thursday": 3,
         "friday": 4,
         "saturday": 5,
-        "sunday": 6
+        "sunday": 6,
     }
 
     day_number = day_mapping.get(day_name.lower())
@@ -179,7 +178,9 @@ def count_days(input_location: str, output_location: str, day_name: str):
             dates = file.readlines()
 
         day_count = sum(
-            1 for date in dates if (parsed_date := parse_date(date)) and parsed_date.weekday() == day_number
+            1
+            for date in dates
+            if (parsed_date := parse_date(date)) and parsed_date.weekday() == day_number
         )
 
         # Create output filename based on the day name
@@ -191,17 +192,17 @@ def count_days(input_location: str, output_location: str, day_name: str):
             file.write(str(day_count))
 
         return {
-            "status": "success", 
+            "status": "success",
             "message": f"Count of {day_name.capitalize()}s saved to {final_output_path}.",
-            "count": day_count
+            "count": day_count,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing dates: {e}")
 
-    
+
 def sort_contacts(input_location: str, output_location: str):
 
-    output_location= os.path.abspath(output_location)
+    output_location = os.path.abspath(output_location)
     if not os.path.exists(input_location):
         raise HTTPException(status_code=404, detail=f"Input file {input_location} does not exist.")
 
@@ -220,12 +221,17 @@ def sort_contacts(input_location: str, output_location: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error sorting contacts: {e}")
 
+
 def write_recent_log_lines(input_location: str, output_location: str):
     if not os.path.exists(input_location):
-        raise HTTPException(status_code=404, detail=f"Logs directory {input_location} does not exist.")
+        raise HTTPException(
+            status_code=404, detail=f"Logs directory {input_location} does not exist."
+        )
 
     try:
-        log_files = sorted(Path(input_location).glob("*.log"), key=lambda f: f.stat().st_mtime, reverse=True)[:10]
+        log_files = sorted(
+            Path(input_location).glob("*.log"), key=lambda f: f.stat().st_mtime, reverse=True
+        )[:10]
 
         with open(output_location, 'w', encoding='utf-8') as output_file:
             for log_file in log_files:
@@ -239,7 +245,8 @@ def write_recent_log_lines(input_location: str, output_location: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing log files: {e}")
-    
+
+
 def generate_markdown_index(input_location: str, output_location: str):
     docs_dir = "data/"  # Searching in the correct location
     output_path = "data/index.json"  # Updated output path for clarity
@@ -270,8 +277,14 @@ def extract_sender_email(input_location: str, output_location: str):
 
         # Define the LLM extraction task
         messages = [
-            {"role": "system", "content": "You are an AI assistant that extracts the sender's email from an email message."},
-            {"role": "user", "content": f"Extract the sender's email address from the following email message. The sender is the person who originally sent the email, not the recipient. Identify the sender by analyzing the email structure, headers, and context. Return only the sender's email address as plain text, nothing else:\n\n{text}"}
+            {
+                "role": "system",
+                "content": "You are an AI assistant that extracts the sender's email from an email message.",
+            },
+            {
+                "role": "user",
+                "content": f"Extract the sender's email address from the following email message. The sender is the person who originally sent the email, not the recipient. Identify the sender by analyzing the email structure, headers, and context. Return only the sender's email address as plain text, nothing else:\n\n{text}",
+            },
         ]
 
         # Make API call
@@ -279,18 +292,14 @@ def extract_sender_email(input_location: str, output_location: str):
             "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {AIPROXY_Token}"
+                "Authorization": f"Bearer {AIPROXY_Token}",
             },
-            json={
-                "model": "gpt-4o-mini",
-                "messages": messages,
-                "temperature": 0.2
-            },
-            verify=False
+            json={"model": "gpt-4o-mini", "messages": messages, "temperature": 0.2},
+            verify=False,
         )
 
         response.raise_for_status()
-        
+
         # Extract response content
         result = response.json()
         sender_email = result["choices"][0]["message"]["content"].strip()
@@ -299,7 +308,10 @@ def extract_sender_email(input_location: str, output_location: str):
         with open(output_location, "w", encoding="utf-8") as f:
             f.write(sender_email)
 
-        return {"status": "success", "message": f"Sender's email extracted and saved to {output_location}"}
+        return {
+            "status": "success",
+            "message": f"Sender's email extracted and saved to {output_location}",
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error extracting sender's email: {str(e)}")
@@ -308,7 +320,9 @@ def extract_sender_email(input_location: str, output_location: str):
 def calculate_gold_sales(input_location: str, output_location: str):
     """Calculate total sales for Gold ticket type and write to output file."""
     if not os.path.exists(input_location):
-        raise HTTPException(status_code=404, detail=f"Database file {input_location} does not exist.")
+        raise HTTPException(
+            status_code=404, detail=f"Database file {input_location} does not exist."
+        )
 
     try:
         # Connect to SQLite database
@@ -323,7 +337,7 @@ def calculate_gold_sales(input_location: str, output_location: str):
         """
         cursor.execute(query)
         total_sales = cursor.fetchone()[0]
-        
+
         # Close database connection
         conn.close()
 
@@ -333,78 +347,67 @@ def calculate_gold_sales(input_location: str, output_location: str):
 
         return {
             "status": "success",
-            "message": f"Gold ticket sales total saved to {output_location}."
+            "message": f"Gold ticket sales total saved to {output_location}.",
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error calculating gold ticket sales: {e}")
-    
 
-def cosine_similarity(v1: List[float], v2: List[float]) -> float:
-    dot_product = sum(x * y for x, y in zip(v1, v2))
-    norm1 = sum(x * x for x in v1) ** 0.5
-    norm2 = sum(x * x for x in v2) ** 0.5
-    return dot_product / (norm1 * norm2) if norm1 > 0 and norm2 > 0 else 0
 
-def get_embedding(text: str, api_token: str) -> List[float]:
-    try:
-        response = requests.post(
-            "http://aiproxy.sanand.workers.dev/openai/v1/embeddings",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_token}"
-            },
-            json={
-                "model": "text-embedding-3-small",
-                "input": text
-            },
-            verify=False
-        )
-        response.raise_for_status()
-        return response.json()["data"][0]["embedding"]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting embedding: {e}")
+def get_openai_embeddings(texts, model="text-embedding-3-small"):
+    """Fetches embeddings for a list of texts using OpenAI's embedding API in batch mode."""
 
-def find_similar_comments(input_location: str, output_location: str):
-    if not os.path.exists(input_location):
-        raise HTTPException(status_code=404, detail=f"Input file {input_location} does not exist.")
+    data = {"input": texts, "model": model}
+    embedding_url = "https://aiproxy.sanand.workers.dev/openai/v1/embeddings"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {AIPROXY_Token}",
+    }
 
-    try:
-        # Read comments
-        with open(input_location, 'r', encoding='utf-8') as file:
-            comments = [line.strip() for line in file if line.strip()]
+    response = requests.post(url=embedding_url, headers=headers, json=data, verify=False)
+    # print(response.json())
+    if response.status_code == 200:
+        return [item["embedding"] for item in response.json()["data"]]
+    else:
+        raise Exception(f"Error {response.status_code}: {response.text}")
 
-        if len(comments) < 2:
-            raise HTTPException(status_code=400, detail="Need at least 2 comments to find similar pairs")
 
-        # Get embeddings for all comments
-        embeddings = []
-        for comment in comments:
-            embedding = get_embedding(comment, AIPROXY_Token)
-            embeddings.append(embedding)
+def cosine_similarity_matrix(embeddings):
+    """Computes cosine similarity matrix for a set of embeddings."""
+    embeddings = np.array(embeddings)
+    norm = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    normalized_embeddings = embeddings / norm
+    return np.dot(normalized_embeddings, normalized_embeddings.T)
 
-        # Find most similar pair
-        max_similarity = -1
-        most_similar_pair = (0, 1)
 
-        for i in range(len(comments)):
-            for j in range(i + 1, len(comments)):
-                similarity = cosine_similarity(embeddings[i], embeddings[j])
-                if similarity > max_similarity:
-                    max_similarity = similarity
-                    most_similar_pair = (i, j)
+def find_similar_comments(input_path, output_path):
+    """Finds the most similar pair of comments using embeddings and writes them to a file."""
+    with open(input_path, "r") as file:
+        comments = [line.strip() for line in file.readlines() if line.strip()]
 
-        # Write results
-        with open(output_location, 'w', encoding='utf-8') as file:
-            file.write(f"{comments[most_similar_pair[0]]}\n")
-            file.write(f"{comments[most_similar_pair[1]]}\n")
+    if len(comments) < 2:
+        raise ValueError("Not enough comments to compare.")
 
-        return {
-            "status": "success",
-            "message": f"Most similar comments saved to {output_location}",
-            "similarity_score": max_similarity
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing comments: {e}")
+    # Fetch embeddings in one batch request
+    embeddings = get_openai_embeddings(comments)
+
+    # Compute similarity matrix
+    similarity_matrix = cosine_similarity_matrix(embeddings)
+
+    # Find the most similar pair (excluding diagonal)
+    np.fill_diagonal(similarity_matrix, -1)  # Avoid self-comparison
+    max_index = np.unravel_index(np.argmax(similarity_matrix), similarity_matrix.shape)
+
+    most_similar_pair = (comments[max_index[0]], comments[max_index[1]])
+
+    # Write to output file
+    with open(output_path, "w") as file:
+        file.write(most_similar_pair[0] + "\n")
+        file.write(most_similar_pair[1] + "\n")
+    return {
+        "status": "success",
+        "message": f"The most similar pair of comments are saved to the loction:- {output_path}.",
+    }
+
 
 def scrape_website(url: str, output_location: str):
     """
@@ -433,8 +436,10 @@ def scrape_website(url: str, output_location: str):
         content = {
             'title': soup.title.string if soup.title else 'No title found',
             'text': soup.get_text(separator='\n', strip=True),
-            'links': [{'text': a.text, 'href': a.get('href')} for a in soup.find_all('a', href=True)],
-            'headers': [h.text for h in soup.find_all(['h1', 'h2', 'h3'])]
+            'links': [
+                {'text': a.text, 'href': a.get('href')} for a in soup.find_all('a', href=True)
+            ],
+            'headers': [h.text for h in soup.find_all(['h1', 'h2', 'h3'])],
         }
 
         # Save to file
@@ -444,13 +449,14 @@ def scrape_website(url: str, output_location: str):
         return {
             "status": "success",
             "message": f"Website content scraped and saved to {output_location}",
-            "url": url
+            "url": url,
         }
 
     except requests.RequestException as e:
         raise HTTPException(status_code=500, detail=f"Error fetching website: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing website content: {str(e)}")
+
 
 def convert_markdown_to_html(input_location: str, output_location: str):
     if not os.path.exists(input_location):
@@ -466,18 +472,21 @@ def convert_markdown_to_html(input_location: str, output_location: str):
             "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {AIPROXY_Token}"
+                "Authorization": f"Bearer {AIPROXY_Token}",
             },
             json={
                 "model": "gpt-4o-mini",
                 "messages": [
-                    {"role": "system", "content": "You are a markdown to HTML converter. Convert the given markdown to valid HTML. Only respond with the HTML code, no explanations."},
-                    {"role": "user", "content": markdown_content}
-                ]
+                    {
+                        "role": "system",
+                        "content": "You are a markdown to HTML converter. Convert the given markdown to valid HTML. Only respond with the HTML code, no explanations.",
+                    },
+                    {"role": "user", "content": markdown_content},
+                ],
             },
-            verify=False
+            verify=False,
         )
-        
+
         response.raise_for_status()
         html_content = response.json()['choices'][0]['message']['content']
 
@@ -487,49 +496,42 @@ def convert_markdown_to_html(input_location: str, output_location: str):
 
         return {
             "status": "success",
-            "message": f"Markdown converted to HTML and saved to {output_location}."
+            "message": f"Markdown converted to HTML and saved to {output_location}.",
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error converting markdown to HTML: {e}")
-    
+
+
 def format_markdown_with_prettier(file_path: str) -> Dict[str, Any]:
     try:
         # Ensure the file exists
         if not os.path.exists(file_path):
-            return {
-                "status": "error",
-                "message": f"File not found: {file_path}"
-            }
-        
+            return {"status": "error", "message": f"File not found: {file_path}"}
+
         # Using shell=True allows Windows to properly handle the command
         result = subprocess.run(
             f"npx prettier@3.4.2 --write {file_path}",
             shell=True,
             check=True,
             text=True,
-            capture_output=True
+            capture_output=True,
         )
-        
+
         print(f"Successfully formatted {file_path}")
         return {
             "status": "success",
             "message": f"Successfully formatted {file_path}",
-            "details": result.stdout.strip()
+            "details": result.stdout.strip(),
         }
     except subprocess.CalledProcessError as e:
         error_message = f"Error formatting file: {e.stderr}"
         print(error_message, file=sys.stderr)
-        return {
-            "status": "error",
-            "message": error_message
-        }
+        return {"status": "error", "message": error_message}
     except Exception as e:
         error_message = f"Unexpected error formatting file: {str(e)}"
         print(error_message, file=sys.stderr)
-        return {
-            "status": "error",
-            "message": error_message
-        }
+        return {"status": "error", "message": error_message}
+
 
 def filter_csv_to_json(input_location: str, output_location: str):
     """
@@ -542,24 +544,179 @@ def filter_csv_to_json(input_location: str, output_location: str):
     try:
         # Read CSV file using pandas
         df = pd.read_csv(input_location)
-        
+
         # Convert DataFrame to JSON format
         json_data = df.to_dict(orient='records')
-        
+
         # Write to output file
         with open(output_location, 'w', encoding='utf-8') as file:
             json.dump(json_data, file, indent=4)
-            
+
         return {
             "status": "success",
             "message": f"CSV data converted to JSON and saved to {output_location}.",
-            "record_count": len(json_data)
+            "record_count": len(json_data),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing CSV file: {e}")
 
 
+def extract_credit_card(input_path: str, output_path: str):
+    try:
+        # Validate input file path
+        if not input_path or not output_path:
+            raise HTTPException(status_code=400, detail="Invalid input or output path provided.")
+
+        # Read image file and encode in base64
+        try:
+            with open(input_path, 'rb') as f:
+                binary_data = f.read()
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"File not found: {input_path}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+
+        if not binary_data:
+            raise HTTPException(
+                status_code=400, detail="Error: Image file is empty or unreadable."
+            )
+
+        print(f"Image file size: {len(binary_data)} bytes")
+
+        # Convert to Base64
+        image_b64 = base64.b64encode(binary_data).decode()
+        data_uri = f"data:image/png;base64,{image_b64}"
+
+        # API setup
+        url = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {AIPROXY_Token}"}
+        data = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Extract the 8+ digit number (formatted with spaces every 4 digits) from this image, return only the digits without spaces.",
+                        },
+                        {"type": "image_url", "image_url": {"url": data_uri}},
+                    ],
+                }
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "math_response",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {"IDnumber": {"type": "string"}},
+                        "required": ["IDnumber"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        }
+
+        # Make API request with SSL verification disabled
+        try:
+            response = requests.post(url=url, headers=headers, json=data, verify=False)
+            response.raise_for_status()
+            response_json = response.json()
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(status_code=500, detail=f"Error calling AI API: {str(e)}")
+
+        # Extract the ID number
+        try:
+            content = json.loads(response_json['choices'][0]['message']['content'])
+            extracted_number = content.get('IDnumber', '')
+            if not extracted_number:
+                raise HTTPException(
+                    status_code=400, detail="No valid number extracted from image."
+                )
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            raise HTTPException(status_code=500, detail=f"Error processing AI response: {str(e)}")
+
+        # Save extracted number to file
+        try:
+            with open(output_path, "w") as f:
+                f.write(extracted_number)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error writing to file: {str(e)}")
+
+        return {
+            "status": "success",
+            "extracted_number": extracted_number,
+            "output_path": output_path,
+        }
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+def run_sql_query(input_location: str, output_location: str, query: str):
+    print(f"Running SQL query: {query}, {input_location}, {output_location}")
+    if not input_location or not query:
+        raise HTTPException(status_code=400, detail="Invalid input parameters: input_location and query are required.")
     
+    # Determine database type (SQLite or DuckDB)
+    is_duckdb = input_location.endswith(".duckdb")
+    
+    if not output_location:
+        output_location = "./data/output.csv"
+    elif output_location.startswith("/"):
+        output_location = f".{output_location}"
+    
+    output_format = "csv" if output_location.endswith(".csv") else "json" if output_location.endswith(".json") else "txt"
+
+    try:
+        # Connect to the database
+        conn = duckdb.connect(input_location) if is_duckdb else sqlite3.connect(input_location)
+        
+        # Execute the query and fetch results into a DataFrame
+        df = pd.read_sql_query(query, conn)
+
+        # Save results
+        if output_format == "json":
+            df.to_json(output_location, orient="records", indent=4)
+        elif output_format == "txt":
+            df.to_csv(output_location, sep="\t", index=False)
+        else:  # Default is CSV
+            df.to_csv(output_location, index=False)
+
+        conn.close()
+        
+        return {"status": "success", "message": f"Query results saved to {output_location}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error executing query: {e}")
+
+def fetch_and_save_api(input_location: str, output_location: str):
+    """
+    Fetches data from an API URL and saves it to a file.
+    
+    Args:
+        input_location (str): The API URL to fetch data from
+        output_location (str): The path where the API response should be saved
+    """
+    try:
+        response = requests.get(input_location)
+        response.raise_for_status()  # Raises an HTTPError for bad responses
+        
+        with open(output_location, 'w', encoding='utf-8') as file:
+            file.write(response.text)
+            
+        return {
+            "status": "success",
+            "message": f"API data successfully fetched and saved to {output_location}"
+        }
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching API data: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving API data: {str(e)}")
+
+
 SORT_CONTACTS = {
     "type": "function",
     "function": {
@@ -602,7 +759,10 @@ WRITE_RECENT_LOG_LINES = {
         "parameters": {
             "type": "object",
             "properties": {
-                "input_location": {"type": "string", "description": "Directory path containing log files"},
+                "input_location": {
+                    "type": "string",
+                    "description": "Directory path containing log files",
+                },
                 "output_location": {"type": "string", "description": "Output file path"},
             },
             "required": ["input_location", "output_location"],
@@ -628,8 +788,14 @@ GENERATE_MARKDOWN_INDEX = {
         "parameters": {
             "type": "object",
             "properties": {
-                "input_location": {"type": "string", "description": "Directory containing Markdown files"},
-                "output_location": {"type": "string", "description": "Output file path for the index"},
+                "input_location": {
+                    "type": "string",
+                    "description": "Directory containing Markdown files",
+                },
+                "output_location": {
+                    "type": "string",
+                    "description": "Output file path for the index",
+                },
             },
             "required": ["input_location", "output_location"],
             "additionalProperties": False,
@@ -654,10 +820,24 @@ COUNT_DAYS = {
         "parameters": {
             "type": "object",
             "properties": {
-                "input_location": {"type": "string", "description": "Path to the input file containing dates"},
+                "input_location": {
+                    "type": "string",
+                    "description": "Path to the input file containing dates",
+                },
                 "output_location": {"type": "string", "description": "Path to the output file"},
-                "day_name": {"type": "string", "description": "Name of the day to count", 
-                           "enum": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]}
+                "day_name": {
+                    "type": "string",
+                    "description": "Name of the day to count",
+                    "enum": [
+                        "monday",
+                        "tuesday",
+                        "wednesday",
+                        "thursday",
+                        "friday",
+                        "saturday",
+                        "sunday",
+                    ],
+                },
             },
             "required": ["input_location", "output_location", "day_name"],
             "additionalProperties": False,
@@ -680,7 +860,10 @@ EXTRACT_SENDER_EMAIL = {
         "parameters": {
             "type": "object",
             "properties": {
-                "input_location": {"type": "string", "description": "Path to the input email file"},
+                "input_location": {
+                    "type": "string",
+                    "description": "Path to the input email file",
+                },
                 "output_location": {"type": "string", "description": "Path to the output file"},
             },
             "required": ["input_location", "output_location"],
@@ -706,7 +889,10 @@ CALCULATE_GOLD_SALES = {
         "parameters": {
             "type": "object",
             "properties": {
-                "input_location": {"type": "string", "description": "Path to the SQLite database file"},
+                "input_location": {
+                    "type": "string",
+                    "description": "Path to the SQLite database file",
+                },
                 "output_location": {"type": "string", "description": "Path to the output file"},
             },
             "required": ["input_location", "output_location"],
@@ -723,16 +909,19 @@ FIND_SIMILAR_COMMENTS = {
             Reads comments from a file, uses embeddings to find the most similar pair,
             and writes them to an output file.
             Input:
-                - input_location (string): Path to the file containing comments (one per line).
-                - output_location (string): Path to the output file where similar comments will be written.
+                - input_path (string): Path to the file containing comments (one per line).
+                - output_path (string): Path to the output file where similar comments will be written.
             Output:
                 - A JSON object with status, message, and similarity score.
         """,
         "parameters": {
             "type": "object",
             "properties": {
-                "input_location": {"type": "string", "description": "Path to the input comments file"},
-                "output_location": {"type": "string", "description": "Path to the output file"},
+                "input_path": {
+                    "type": "string",
+                    "description": "Path to the input comments file",
+                },
+                "output_path": {"type": "string", "description": "Path to the output file"},
             },
             "required": ["input_location", "output_location"],
             "additionalProperties": False,
@@ -758,7 +947,10 @@ SCRAPE_WEBSITE = {
             "type": "object",
             "properties": {
                 "url": {"type": "string", "description": "URL of the website to scrape"},
-                "output_location": {"type": "string", "description": "Output file path for scraped data"},
+                "output_location": {
+                    "type": "string",
+                    "description": "Output file path for scraped data",
+                },
             },
             "required": ["url", "output_location"],
             "additionalProperties": False,
@@ -782,8 +974,14 @@ CONVERT_MARKDOWN_HTML = {
         "parameters": {
             "type": "object",
             "properties": {
-                "input_location": {"type": "string", "description": "Path to the input Markdown file"},
-                "output_location": {"type": "string", "description": "Path to the output HTML file"},
+                "input_location": {
+                    "type": "string",
+                    "description": "Path to the input Markdown file",
+                },
+                "output_location": {
+                    "type": "string",
+                    "description": "Path to the output HTML file",
+                },
             },
             "required": ["input_location", "output_location"],
             "additionalProperties": False,
@@ -807,13 +1005,13 @@ FORMAT_MARKDOWN = {
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "The path to the markdown file to be formatted."
+                    "description": "The path to the markdown file to be formatted.",
                 }
             },
             "required": ["file_path"],
-            "additionalProperties": False
-        }
-    }
+            "additionalProperties": False,
+        },
+    },
 }
 
 
@@ -828,7 +1026,10 @@ SETUP_AND_RUN_DATAGEN = {
         "parameters": {
             "type": "object",
             "properties": {
-                "user_email": {"type": "string", "description": "Email to be passed as an argument to datagen.py"}
+                "user_email": {
+                    "type": "string",
+                    "description": "Email to be passed as an argument to datagen.py",
+                }
             },
             "required": ["user_email"],
             "additionalProperties": False,
@@ -853,7 +1054,84 @@ FILTER_CSV_TO_JSON = {
             "type": "object",
             "properties": {
                 "input_location": {"type": "string", "description": "Path to the input CSV file"},
-                "output_location": {"type": "string", "description": "Path to the output JSON file"},
+                "output_location": {
+                    "type": "string",
+                    "description": "Path to the output JSON file",
+                },
+            },
+            "required": ["input_location", "output_location"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+EXTRACT_CREDIT_CARD = {
+    "type": "function",
+    "function": {
+        "name": "extract_credit_card",
+        "description": "Extract the credit card number from an image file.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "input_path": {
+                    "type": "string",
+                    "description": "The path of the image file containing the credit card number.",
+                },
+                "output_path": {
+                    "type": "string",
+                    "description": "The path of the file to write the extracted credit card number.",
+                },
+            },
+            "required": ["input_path", "output_path"],
+        },
+    },
+}
+
+RUN_SQL_QUERY = {
+    "type": "function",
+    "function": {
+        "name": "run_sql_query",
+        "description": """
+            Executes a SQL query on a SQLite or DuckDB database and saves the results to a file.
+            Input:
+                - input_location (string): Path to the SQLite (.db) or DuckDB (.duckdb) database file.
+                - output_location (string): Path where the query results should be saved.
+                - query (string): SQL query to execute.
+            Output:
+                - A JSON object with a "status" field (string) indicating "Success" or "Error",
+                  and a "message" field (string) containing the path to the results file.
+        """,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "input_location": {"type": "string", "description": "Path to the database file"},
+                "output_location": {"type": "string", "description": "Path to save the query results"},
+                "query": {"type": "string", "description": "SQL query to execute"},
+            },
+            "required": ["input_location", "output_location", "query"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+FETCH_API_DATA = {
+    "type": "function",
+    "function": {
+        "name": "fetch_and_save_api",
+        "description": """
+            Fetches data from a specified API URL and saves the response to a file.
+            Input:
+                - input_location (string): The API URL to fetch data from
+                - output_location (string): The path where the API response should be saved
+            Output:
+                - A JSON object with a "status" field (string) indicating "Success" or "Error",
+                  and a "message" field (string) containing the result details.
+        """,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "input_location": {"type": "string", "description": "API URL to fetch data from"},
+                "output_location": {"type": "string", "description": "Output file path"},
             },
             "required": ["input_location", "output_location"],
             "additionalProperties": False,
@@ -864,12 +1142,31 @@ FILTER_CSV_TO_JSON = {
 
 AIPROXY_Token = os.getenv("AIPROXY_TOKEN")
 
-tools = [SORT_CONTACTS, WRITE_RECENT_LOG_LINES, GENERATE_MARKDOWN_INDEX, COUNT_DAYS, EXTRACT_SENDER_EMAIL, CALCULATE_GOLD_SALES, FIND_SIMILAR_COMMENTS, SCRAPE_WEBSITE, CONVERT_MARKDOWN_HTML, FORMAT_MARKDOWN, SETUP_AND_RUN_DATAGEN, FILTER_CSV_TO_JSON ]
+tools = [
+    SORT_CONTACTS,
+    WRITE_RECENT_LOG_LINES,
+    GENERATE_MARKDOWN_INDEX,
+    COUNT_DAYS,
+    EXTRACT_SENDER_EMAIL,
+    CALCULATE_GOLD_SALES,
+    FIND_SIMILAR_COMMENTS,
+    SCRAPE_WEBSITE,
+    CONVERT_MARKDOWN_HTML,
+    FORMAT_MARKDOWN,
+    SETUP_AND_RUN_DATAGEN,
+    FILTER_CSV_TO_JSON,
+    EXTRACT_CREDIT_CARD,
+    RUN_SQL_QUERY,
+    FETCH_API_DATA
+]
+
 
 def query_gpt(user_input: str, tools: list[Dict[str, Any]]) -> Dict[str, Any]:
     if not AIPROXY_Token:
-        raise HTTPException(status_code=500, detail="AIPROXY_TOKEN environment variable is missing")
-    print("AIPROXY_Token:", AIPROXY_Token) 
+        raise HTTPException(
+            status_code=500, detail="AIPROXY_TOKEN environment variable is missing"
+        )
+    # print("AIPROXY_Token:", AIPROXY_Token)
 
     system_instruction = """
     You are an advanced AI assistant capable of understanding instructions in any multilingual language.
@@ -890,18 +1187,18 @@ def query_gpt(user_input: str, tools: list[Dict[str, Any]]) -> Dict[str, Any]:
             "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {AIPROXY_Token}"
+                "Authorization": f"Bearer {AIPROXY_Token}",
             },
             json={
                 "model": "gpt-4o-mini",
                 "messages": [
                     {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": user_input}
+                    {"role": "user", "content": user_input},
                 ],
                 "tools": tools,
-                "tool_choice": "auto" 
+                "tool_choice": "auto",
             },
-            verify=False  # Use with caution in production!
+            verify=False,  # Use with caution in production!
         )
         response.raise_for_status()
         return response.json()
@@ -915,31 +1212,39 @@ def query_gpt(user_input: str, tools: list[Dict[str, Any]]) -> Dict[str, Any]:
         print(f"A general error occurred: {e}")
         raise HTTPException(status_code=500, detail=f"A general error occurred: {e}")
 
+
 FUNCTIONS = {
     "sort_contacts": sort_contacts,
     "write_recent_log_lines": write_recent_log_lines,
     "generate_markdown_index": generate_markdown_index,
     "count_days": count_days,
     "extract_sender_email": extract_sender_email,
-    "calculate_gold_sales":  calculate_gold_sales,
+    "calculate_gold_sales": calculate_gold_sales,
     "find_similar_comments": find_similar_comments,
     "scrape_website": scrape_website,
     "convert_markdown_to_html": convert_markdown_to_html,
     "format_markdown_with_prettier": format_markdown_with_prettier,
     "setup_and_run_datagen": setup_and_run_datagen,
-    "filter_csv_to_json": filter_csv_to_json
+    "filter_csv_to_json": filter_csv_to_json,
+    "extract_credit_card": extract_credit_card,
+    "run_sql_query": run_sql_query,
+    "fetch_and_save_api": fetch_and_save_api
 }
-@app.get("/run")
+
+
 @app.post("/run")
 async def run(
     task: str = Query(None, description="Task to execute"),  # Add query parameter support
-    task_request: RunTaskRequest = None  # Make the JSON body optional
+    task_request: RunTaskRequest = None,  # Make the JSON body optional
 ):
     # Get the task either from query parameter or request body
     task_text = task or (task_request.task if task_request else None)
-    
+
     if not task_text:
-        raise HTTPException(status_code=400, detail="Task must be provided either in query parameter or request body")
+        raise HTTPException(
+            status_code=400,
+            detail="Task must be provided either in query parameter or request body",
+        )
 
     task_text = task_text.strip()
     if not task_text:
@@ -969,7 +1274,9 @@ async def run(
                     except Exception as e:
                         raise HTTPException(status_code=500, detail=f"Error calling function: {e}")
                 else:
-                    raise HTTPException(status_code=400, detail=f"Function not found: {function_name}")
+                    raise HTTPException(
+                        status_code=400, detail=f"Function not found: {function_name}"
+                    )
         else:
             return {"message": "No tool calls found."}
 
@@ -979,15 +1286,23 @@ async def run(
         print(f"An unexpected error occurred: {e}")
         raise HTTPException(status_code=500, detail="An unexpected error occurred.")
 
-@app.get("/read")
+
+@app.get("/read", response_class=PlainTextResponse)
 async def read_file(path: str = Query(..., description="Path to the file to read")):
     try:
         if not os.path.exists(path):
             raise HTTPException(status_code=404, detail=f"File not found: {path}")
-        
+
         with open(path, 'r', encoding='utf-8') as file:
             content = file.read()
-            
-        return {"content": content}
+
+        return content
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, port=5000)
